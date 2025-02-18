@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>정적분의 활용(넓이)</title>
+  <!-- MathJax for LaTeX rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" defer></script>
+  <style>
+    /* 흑백 색상만 사용 */
+    body {
+      background-color: #fff;
+      color: #000;
+      font-family: sans-serif;
+      margin: 20px;
+    }
+    .hidden {
+      display: none;
+    }
+    .question-container {
+      border: 1px solid #000;
+      padding: 15px;
+      margin: 10px 0;
+    }
+    .answer-button {
+      display: block;
+      margin: 5px 0;
+      padding: 5px;
+      cursor: pointer;
+      border: 1px solid #000;
+      background-color: #fff;
+    }
+    .answer-button:hover {
+      background-color: #ccc;
+    }
+    .correct {
+      color: #000;
+      background-color: #ccc;
+    }
+    .wrong {
+      color: #000;
+      background-color: #ccc;
+    }
+    #nextButton {
+      margin-top: 10px;
+      padding: 5px 10px;
+      border: 1px solid #000;
+      background-color: #fff;
+      cursor: pointer;
+    }
+    #startGameBtn, #sendScoreBtn {
+      margin-top: 10px;
+      padding: 8px 12px;
+      border: 1px solid #000;
+      background-color: #fff;
+      cursor: pointer;
+    }
+    #gameInfo {
+      margin-top: 10px;
+    }
+    /* 에너지바(시간제한) 시각화: 단순한 게이지 예시 */
+    .energy-bar {
+      width: 100%;
+      height: 10px;
+      background-color: #ccc;
+      margin: 10px 0;
+      position: relative;
+      overflow: hidden;
+    }
+    .energy-bar-inner {
+      height: 100%;
+      background-color: #000;
+      width: 100%;
+      transition: width 0.2s linear;
+    }
+  </style>
+</head>
+
+<body>
+<h1>정적분의 활용(넓이)</h1>
+
+<!-- 첫 화면: 이름 입력, 난이도 선택 -->
+<div id="introScreen">
+  <label for="playerName">이름을 입력하세요:</label>
+  <input type="text" id="playerName" />
+  <br/><br/>
+  <div>난이도를 선택하세요:</div>
+  <label><input type="radio" name="difficulty" value="hardest" /> 최상(문제당 20점, 제한 20초)</label><br/>
+  <label><input type="radio" name="difficulty" value="hard" /> 상(문제당 15점, 제한 30초)</label><br/>
+  <label><input type="radio" name="difficulty" value="medium" /> 중(문제당 13점, 제한 40초)</label><br/>
+  <label><input type="radio" name="difficulty" value="easy" checked/> 하(문제당 10점, 시간제한 없음)</label><br/>
+  <button id="startGameBtn">게임 시작</button>
+</div>
+
+<!-- 게임 영역 -->
+<div id="gameScreen" class="hidden">
+  <div id="gameInfo">
+    <div>전체 게임 진행 시간: <span id="totalTime">0</span>초</div>
+    <div>남은 기회: <span id="lives">3</span></div>
+    <div>현재 점수: <span id="score">0</span></div>
+  </div>
+
+  <div class="energy-bar hidden" id="energyBar">
+    <div class="energy-bar-inner" id="energyBarInner"></div>
+  </div>
+
+  <div id="questionArea"></div>
+
+  <button id="nextButton" class="hidden">다음 문제</button>
+</div>
+
+<!-- 게임 종료 화면 -->
+<div id="endScreen" class="hidden">
+  <h2>게임이 종료되었습니다.</h2>
+  <div>최종 점수: <span id="finalScore"></span></div>
+  <button id="sendScoreBtn">점수전송</button>
+  <div id="response"></div>
+</div>
+
+<script>
+// --------------------------------------------------------------------------------
+// 저장(전송) 함수
+// --------------------------------------------------------------------------------
+function saveData(game, name, score, elapsedTime) {
+    const FUNCTION_URL = "https://us-central1-record-f420d.cloudfunctions.net/report";
+
+    const requestData = {
+        game,
+        name,
+        score: parseInt(score, 10),
+        elapsedTime: parseInt(elapsedTime, 10)
+    };
+
+    fetch(FUNCTION_URL, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(requestData)
+    })
+    .then(response => {
+        return response.json().then(data => {
+            if (response.ok) {
+                document.getElementById('response').innerText = 
+                    "성공: " + JSON.stringify(data, null, 2);
+            } else {
+                document.getElementById('response').innerText = 
+                    "오류: " + JSON.stringify(data, null, 2);
+            }
+        });
+    })
+    .catch(error => {
+        console.error('요청 실패:', error);
+        document.getElementById('response').innerText = 
+            "네트워크 오류: " + error.message;
+    });
+}
+
+// --------------------------------------------------------------------------------
+// 문제 데이터 (모두 빠짐없이, 무작위 섞어서 낼 예정)
+// 각 문제는 { question: "...", choices: [...], correctIndex: number, solution: "..." }
+// --------------------------------------------------------------------------------
+//
+// 문제 번호는 따로 표기하지 않고, 질문 안에 필요한 조건을 모두 넣되
+// 불필요한 힌트나 중복 표현은 넣지 않음.
+// 각 문제는 '정적분의 활용' 형태의 간단한 문항으로 구성
+//
+// 주의: \(\dfrac{}{}\) 등 MathJax 표기는 \\( ... \\) 형태로 작성
+// 예: \\(\\dfrac{1}{2}\\)
+//
+// 아래 문제 순서는 '최종적으로' 게임에서 랜덤으로 나오므로
+// 여기에선 임의의 순서로 배치함.
+//
+let questions = [
+  // #36
+  {
+    question: "원점을 출발한 점 P의 속도가 \\(v(t)=5t - t^2\\)일 때, \\(t=0\\)에서 \\(t=2\\)까지의 위치변화를 구하시오.",
+    choices: [
+      "\\(\\dfrac{10}{3}\\)",
+      "\\(\\dfrac{8}{3}\\)",
+      "\\(6\\)",
+      "\\(\\dfrac{14}{3}\\)",
+      "\\(\\dfrac{22}{3}\\)" // correct
+    ],
+    correctIndex: 4,
+    solution: "정답: \\(\\dfrac{22}{3}\\)"
+  },
+  // #7
+  {
+    question: "점 P의 속도가 \\(v(t)=t^2 - 2t + 2\\)이고, \\(P(0)=0\\)일 때, \\(t=4\\)에서 점 P의 위치를 구하시오.",
+    choices: [
+      "\\(8\\)",
+      "\\(\\dfrac{40}{3}\\)", // correct
+      "\\(12\\)",
+      "\\(\\dfrac{32}{3}\\)",
+      "\\(\\dfrac{28}{3}\\)"
+    ],
+    correctIndex: 1,
+    solution: "정답: \\(\\dfrac{40}{3}\\)"
+  },
+  // #25
+  {
+    question: "원점을 출발한 점 P의 속도가 \\(v(t)=5t - 2\\)이고, \\(t=0\\)에서 \\(t=1\\)까지 움직일 때, 점 P의 위치변화를 구하시오.",
+    choices: [
+      "\\(1\\)",
+      "\\(\\dfrac{1}{2}\\)", // correct
+      "\\(\\dfrac{3}{2}\\)",
+      "\\(\\dfrac{5}{2}\\)",
+      "\\(\\dfrac{2}{3}\\)"
+    ],
+    correctIndex: 1,
+    solution: "정답: \\(\\dfrac{1}{2}\\)"
+  },
+  // #39
+  {
+    question: "A지점을 지난 뒤 \\(t\\)초 후 속도가 \\(v(t)=3 + 2t\\)(m/s)인 물체가, A지점에서 28m 떨어진 B지점에 도달하기까지 걸린 시간을 구하시오.",
+    choices: [
+      "\\(2\\)초",
+      "\\(3\\)초",
+      "\\(4\\)초", // correct
+      "\\(5\\)초",
+      "\\(6\\)초"
+    ],
+    correctIndex: 2,
+    solution: "정답: 4초"
+  },
+  // #1
+  {
+    question: "점 P의 속도가 \\(v(t)=t^2 - 3t + 2\\)이고, \\(P(0)=3\\)일 때, 시각 \\(t\\)에서 점 P의 위치 \\(P(t)\\)를 구하시오.",
+    choices: [
+      "\\(3 + \\dfrac{t^3}{3} - \\dfrac{3t^2}{2} + 2t\\)", // correct
+      "\\(3 - \\dfrac{t^3}{3} + \\dfrac{3t^2}{2} - 2t\\)",
+      "\\(\\dfrac{t^3}{3} + 2t\\)",
+      "\\(3 + t^2 - 3t + 2\\)",
+      "\\(3 + \\dfrac{t^2}{2} - 3t\\)"
+    ],
+    correctIndex: 0,
+    solution: "정답: \\(P(t)=3 + \\int_0^t (u^2 - 3u + 2)\\,du = 3 + \\dfrac{t^3}{3} - \\dfrac{3t^2}{2} + 2t\\)"
+  },
+  // #10
+  {
+    question: "점 P의 속도가 \\(v(t)=2t - 1\\)이고, \\(P(0)=5\\)일 때, \\(t=2\\)에서 점 P의 위치를 구하시오.",
+    choices: [
+      "\\(6\\)",
+      "\\(7\\)", // correct
+      "\\(5\\)",
+      "\\(\\dfrac{9}{2}\\)",
+      "\\(8\\)"
+    ],
+    correctIndex: 1,
+    solution: "정답: 7"
+  },
+  // #29
+  {
+    question: "점 P의 속도가 \\(v(t)=t^2 - 2t\\)이며, \\(t=0\\)에서 \\(t=3\\)까지 움직였을 때, 점 P의 위치변화를 구하시오(순변위).",
+    choices: [
+      "\\(0\\)", // correct
+      "\\(\\dfrac{8}{3}\\)",
+      "\\(1\\)",
+      "\\(\\dfrac{4}{3}\\)",
+      "\\(-1\\)"
+    ],
+    correctIndex: 0,
+    solution: "정답: 0"
+  },
+  // #9
+  {
+    question: "점 P의 속도가 \\(v(t)=t^2 - 2t + 2\\)이고, \\(P(0)=0\\)일 때, \\(t=0\\)에서 \\(t=4\\)까지 점 P가 움직인 거리를 구하시오.",
+    choices: [
+      "\\(8\\)",
+      "\\(10\\)",
+      "\\(\\dfrac{40}{3}\\)", // correct
+      "\\(12\\)",
+      "\\(\\dfrac{28}{3}\\)"
+    ],
+    correctIndex: 2,
+    solution: "정답: \\(\\dfrac{40}{3}\\)"
+  },
+  // #33
+  {
+    question: "점 P의 속도가 \\(v(t)=t^2 - 2t\\)이고, \\(t=0\\)에서 \\(t=3\\)까지 움직였을 때, 점 P의 위치변화를 구하시오(순변위).",
+    choices: [
+      "\\(0\\)", // correct
+      "\\(\\dfrac{4}{3}\\)",
+      "\\(\\dfrac{8}{3}\\)",
+      "\\(-2\\)",
+      "\\(2\\)"
+    ],
+    correctIndex: 0,
+    solution: "정답: 0"
+  },
+  // #2
+  {
+    question: "점 P의 속도가 \\(v(t)=t^2 - 3t + 2\\)이고, \\(P(0)=3\\)일 때, \\(t=0\\)에서 \\(t=2\\)까지의 위치변화를 구하시오(순변위).",
+    choices: [
+      "\\(1\\)",
+      "\\(\\dfrac{2}{3}\\)", // correct
+      "\\(\\dfrac{4}{3}\\)",
+      "\\(2\\)",
+      "\\(-1\\)"
+    ],
+    correctIndex: 1,
+    solution: "정답: \\(\\dfrac{2}{3}\\)"
+  },
+  // #37
+  {
+    question: "원점을 출발한 점 P의 속도가 \\(v(t)=t^2 - 6t\\)일 때, \\(t=2\\)에서 점 P의 위치를 구하시오.",
+    choices: [
+      "\\(\\dfrac{-28}{3}\\)", // correct
+      "\\(\\dfrac{-16}{3}\\)",
+      "\\(0\\)",
+      "\\(\\dfrac{8}{3}\\)",
+      "\\(\\dfrac{-4}{3}\\)"
+    ],
+    correctIndex: 0,
+    solution: "정답: \\(-\\dfrac{28}{3}\\)"
+  },
+  // #12
+  {
+    question: "점 P의 속도가 \\(v(t)=2t - 1\\)이고, \\(P(0)=5\\)일 때, \\(t=0\\)에서 \\(t=3\\)까지 점 P가 움직인 거리를 구하시오.",
+    choices: [
+      "\\(6\\)",
+      "\\(5\\)",
+      "\\(\\dfrac{13}{2}\\)", // correct
+      "\\(\\dfrac{11}{2}\\)",
+      "\\(7\\)"
+    ],
+    correctIndex: 2,
+    solution: "정답: \\(\\dfrac{13}{2}\\)"
+  },
+  // #24
+  {
+    question: "점 P의 속도가 \\(v(t)=t^2 - 2t\\)이고, \\(t=0\\)에서 \\(t=3\\)까지 움직였을 때, 점 P의 위치변화를 구하시오(순변위).",
+    choices: [
+      "\\(\\dfrac{8}{3}\\)",
+      "\\(2\\)",
+      "\\(1\\)",
+      "\\(0\\)", // correct
+      "\\(\\dfrac{-4}{3}\\)"
+    ],
+    correctIndex: 3,
+    solution: "정답: 0"
+  },
+  // #30
+  {
+    question: "점 P의 속도가 \\(v(t)=t^2 - 2t\\)이고, \\(t=0\\)에서 \\(t=3\\)까지 움직였을 때, 점 P가 이동한 거리(총거리)를 구하시오.",
+    choices: [
+      "\\(\\dfrac{8}{3}\\)", // correct
+      "\\(2\\)",
+      "\\(4\\)",
+      "\\(3\\)",
+      "\\(\\dfrac{4}{3}\\)"
+    ],
+    correctIndex: 0,
+    solution: "정답: \\(\\dfrac{8}{3}\\)"
+  },
+  // #35
+  {
+    question: "점 A(4)에서 출발한 점 P의 속도가 \\(v(t)=t^2 - 2t\\)일 때, \\(t=3\\)에서 점 P의 위치를 구하시오.",
+    choices: [
+      "\\(0\\)",
+      "\\(2\\)",
+      "\\(4\\)", // correct
+      "\\(-2\\)",
+      "\\(6\\)"
+    ],
+    correctIndex: 2,
+    solution: "정답: 4"
+  },
+  // #8
+  {
+    question: "점 P의 속도가 \\(v(t)=t^2 - 2t + 2\\)이고, \\(P(0)=0\\)일 때, \\(t=0\\)에서 \\(t=2\\)까지의 위치변화를 구하시오(순변위).",
+    choices: [
+      "\\(\\dfrac{8}{3}\\)", // correct
+      "\\(2\\)",
+      "\\(1\\)",
+      "\\(\\dfrac{4}{3}\\)",
+      "\\(3\\)"
+    ],
+    correctIndex: 0,
+    solution: "정답: \\(\\dfrac{8}{3}\\)"
+  },
+  // #38
+  {
+    question: "원점을 출발한 점 P의 속도가 \\(v(t)=8 - 4t\\)일 때, P의 움직이는 방향이 바뀌는 시각과 그때의 P의 좌표(\\(t\\ge 0\\))를 구하시오.",
+    choices: [
+      "시각 \\(t=2\\), 좌표 8", // correct
+      "시각 \\(t=1\\), 좌표 4",
+      "시각 \\(t=4\\), 좌표 0",
+      "시각 \\(t=2\\), 좌표 4",
+      "시각 \\(t=3\\), 좌표 6"
+    ],
+    correctIndex: 0,
+    solution: "정답: 시각 \\(t=2\\), 좌표 8"
+  },
+  // #3
+  {
+    question: "점 P의 속도가 \\(v(t)=t^2 - 3t + 2\\)이고, \\(P(0)=3\\)일 때, \\(t=0\\)에서 \\(t=2\\)까지 P가 움직인 거리를 구하시오.",
+    choices: [
+      "\\(1\\)", // correct
+      "\\(\\dfrac{2}{3}\\)",
+      "\\(2\\)",
+      "\\(\\dfrac{5}{6}\\)",
+      "\\(\\dfrac{3}{2}\\)"
+    ],
+    correctIndex: 0,
+    solution: "정답: 1"
+  },
+  // #44
+  {
+    question: "직선 철로 위를 초속 20m/s로 달리던 기차가 제동을 건 뒤 \\(t\\)초 후 속도가 \\(v(t)=60 - 3t\\)(m/s)라고 할 때, 기차가 정지할 때까지 달린 거리를 구하시오.",
+    choices: [
+      "\\(300\\)m",
+      "\\(450\\)m",
+      "\\(600\\)m", // correct
+      "\\(650\\)m",
+      "\\(225\\)m"
+    ],
+    correctIndex: 2,
+    solution: "정답: 600m"
+  },
+  // #40
+  {
+    question: "점 P의 위치가 \\(f(t)=t^3 - 9t + 20\\)일 때, \\(t=2\\)에서 \\(t=4\\)까지 점 P가 움직인 거리를 구하시오.",
+    choices: [
+      "\\(28\\)",
+      "\\(38\\)", // correct
+      "\\(40\\)",
+      "\\(36\\)",
+      "\\(48\\)"
+    ],
+    correctIndex: 1,
+    solution: "정답: 38"
+  },
+  // #23
+  {
+    question: "원점을 출발한 점 P의 속도가 \\(v(t)=t^2 - 2t\\)이고, \\(t=0\\)에서 \\(t=2\\)까지 움직였을 때, 점 P의 위치변화를 구하시오(순변위).",
+    choices: [
+      "\\(\\dfrac{-4}{3}\\)", // correct
+      "\\(\\dfrac{-2}{3}\\)",
+      "\\(0\\)",
+      "\\(\\dfrac{2}{3}\\)",
+      "\\(\\dfrac{-8}{3}\\)"
+    ],
+    correctIndex: 0,
+    solution: "정답: \\(-\\dfrac{4}{3}\\)"
+  },
+  // #11
+  {
+    question: "점 P의 속도가 \\(v(t)=2t - 1\\)이고, \\(P(0)=5\\)일 때, \\(t=0\\)에서 \\(t=3\\)까지의 위치변화를 구하시오(순변위).",
+    choices: [
+      "\\(4\\)",
+      "\\(5\\)",
+      "\\(6\\)", // correct
+      "\\(\\dfrac{11}{2}\\)",
+      "\\(3\\)"
+    ],
+    correctIndex: 2,
+    solution: "정답: 6"
+  },
+  // #31
+  {
+    question: "원점을 출발한 점 P의 속도가 \\(v(t)=2t^2 - 4t\\)이고, \\(t=0\\)에서 \\(t=3\\)까지 P가 움직인 거리를 구하시오.",
+    choices: [
+      "\\(\\dfrac{16}{3}\\)", // correct
+      "\\(\\dfrac{8}{3}\\)",
+      "\\(6\\)",
+      "\\(4\\)",
+      "\\(8\\)"
+    ],
+    correctIndex: 0,
+    solution: "정답: \\(\\dfrac{16}{3}\\)"
+  },
+  // #45
+  {
+    question: "직선 철로 위를 초속 20m/s로 달리는 전동차가 제동을 건 뒤 \\(t\\)초 후 속도가 \\(v(t)=30 - 2t\\)(m/s)라 할 때, 전동차가 정지할 때까지 달린 거리를 구하시오.",
+    choices: [
+      "\\(200\\)m",
+      "\\(225\\)m", // correct
+      "\\(250\\)m",
+      "\\(300\\)m",
+      "\\(400\\)m"
+    ],
+    correctIndex: 1,
+    solution: "정답: 225m"
+  },
+  // #26
+  {
+    question: "원점을 출발한 점 P의 속도가 \\(v(t)=t^2 - 2\\)이고, \\(t=0\\)에서 \\(t=6\\)까지 움직였을 때, 점 P의 위치변화를 구하시오(순변위).",
+    choices: [
+      "\\(54\\)",
+      "\\(58\\)",
+      "\\(60\\)", // correct
+      "\\(62\\)",
+      "\\(64\\)"
+    ],
+    correctIndex: 2,
+    solution: "정답: 60"
+  },
+  // #32
+  {
+    question: "원점을 출발한 점 P의 속도가 \\(v(t)=t^2 - 2\\)이고, \\(t=0\\)에서 \\(t=6\\)까지 P가 움직인 거리를 구하시오.",
+    choices: [
+      "\\(60\\)",
+      "\\(60 + \\dfrac{8\\sqrt{2}}{3}\\)", // correct
+      "\\(62\\)",
+      "\\(64\\)",
+      "\\(58 + 2\\sqrt{2}\\)"
+    ],
+    correctIndex: 1,
+    solution: "정답: \\(60 + \\dfrac{8\\sqrt{2}}{3}\\)"
+  },
+  // #34
+  {
+    question: "점 P의 속도가 \\(v(t)=t^2 - 2t\\)이고, \\(t=0\\)에서 \\(t=3\\)까지 움직였을 때, 점 P가 이동한 거리(총거리)를 구하시오.",
+    choices: [
+      "\\(\\dfrac{4}{3}\\)",
+      "\\(3\\)",
+      "\\(\\dfrac{8}{3}\\)", // correct
+      "\\(1\\)",
+      "\\(\\dfrac{2}{3}\\)"
+    ],
+    correctIndex: 2,
+    solution: "정답: \\(\\dfrac{8}{3}\\)"
+  }
+];
+
+// --------------------------------------------------------------------------------
+// 난이도별 설정
+// --------------------------------------------------------------------------------
+let timeLimitPerQuestion = Infinity; // 기본은 하(시간제한 없음)
+let scorePerQuestion = 10; // 기본 하: 10점
+
+// 전체 진행 시간(초)
+let totalElapsedTime = 0;
+// 인터벌 타이머
+let totalTimeTimer = null;
+let questionTimer = null;
+
+// 현재 문제 인덱스
+let currentQuestionIndex = 0;
+// 문제를 한 바퀴 다 풀었는지 체크용
+let questionsAnswered = 0;
+
+// 정답 개수 / 점수
+let score = 0;
+// 남은 기회
+let lives = 3;
+
+// 문제 목록을 무작위로 순회하기 위한 배열
+let questionOrder = [];
+// 한 바퀴 돈 후에는 계속 랜덤
+function initQuestionOrder() {
+  questionOrder = [];
+  for(let i=0; i<questions.length; i++){
+    questionOrder.push(i);
+  }
+  shuffleArray(questionOrder);
+  currentQuestionIndex = 0;
+  questionsAnswered = 0;
+}
+
+// --------------------------------------------------------------------------------
+// 셔플 함수 (보기나 문제 순서를 섞을 때 사용)
+// --------------------------------------------------------------------------------
+function shuffleArray(array) {
+  for (let i = array.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [array[i], array[j]] = [array[j], array[i]];
+  }
+}
+
+// --------------------------------------------------------------------------------
+// 게임 시작
+// --------------------------------------------------------------------------------
+document.getElementById("startGameBtn").addEventListener("click", startGame);
+
+function startGame(){
+  const playerName = document.getElementById("playerName").value.trim();
+  if(!playerName){
+    alert("이름을 입력하세요.");
+    return;
+  }
+  const diffElems = document.getElementsByName("difficulty");
+  let diffValue = "";
+  for(let i=0; i<diffElems.length; i++){
+    if(diffElems[i].checked){
+      diffValue = diffElems[i].value;
+      break;
+    }
+  }
+  if(diffValue === "hardest"){
+    timeLimitPerQuestion = 20000; // ms
+    scorePerQuestion = 20;
+  } else if(diffValue === "hard"){
+    timeLimitPerQuestion = 30000; // ms
+    scorePerQuestion = 15;
+  } else if(diffValue === "medium"){
+    timeLimitPerQuestion = 40000; // ms
+    scorePerQuestion = 13;
+  } else {
+    timeLimitPerQuestion = Infinity; // no limit
+    scorePerQuestion = 10;
+  }
+
+  document.getElementById("introScreen").classList.add("hidden");
+  document.getElementById("gameScreen").classList.remove("hidden");
+
+  // 초기화
+  score = 0;
+  lives = 3;
+  totalElapsedTime = 0;
+  document.getElementById("score").textContent = score;
+  document.getElementById("lives").textContent = lives;
+  document.getElementById("totalTime").textContent = totalElapsedTime;
+
+  // 문제 순서 초기화
+  initQuestionOrder();
+
+  // 전체 시간 타이머 시작
+  if(totalTimeTimer) clearInterval(totalTimeTimer);
+  totalTimeTimer = setInterval(()=>{
+    totalElapsedTime++;
+    document.getElementById("totalTime").textContent = totalElapsedTime;
+  },1000);
+
+  // 첫 문제 표시
+  showQuestion();
+}
+
+// --------------------------------------------------------------------------------
+// 문제 표시
+// --------------------------------------------------------------------------------
+function showQuestion(){
+  if(lives <= 0){
+    endGame();
+    return;
+  }
+
+  // 한 바퀴 다 돌았는지 체크
+  if(questionsAnswered >= questions.length){
+    // 이후에는 계속 랜덤
+    currentQuestionIndex = Math.floor(Math.random()*questions.length);
+  } else {
+    // 아직 첫 바퀴 도는 중
+    currentQuestionIndex = questionOrder[questionsAnswered];
+  }
+
+  // 에너지바 세팅
+  const energyBar = document.getElementById("energyBar");
+  const energyBarInner = document.getElementById("energyBarInner");
+  if(timeLimitPerQuestion === Infinity){
+    energyBar.classList.add("hidden");
+  } else {
+    energyBar.classList.remove("hidden");
+    energyBarInner.style.width = "100%";
+  }
+
+  // 문제 텍스트
+  const q = questions[currentQuestionIndex];
+  const questionArea = document.getElementById("questionArea");
+  questionArea.innerHTML = "";
+  document.getElementById("nextButton").classList.add("hidden");
+
+  // 문제 컨테이너
+  const container = document.createElement("div");
+  container.className = "question-container";
+  container.innerHTML = "<div>"+q.question+"</div>";
+  questionArea.appendChild(container);
+
+  // 보기 생성 (셔플)
+  let choiceIndices = [0,1,2,3,4];
+  shuffleArray(choiceIndices);
+  choiceIndices.forEach(idx=>{
+    const btn = document.createElement("button");
+    btn.className = "answer-button";
+    btn.innerHTML = q.choices[idx];
+    btn.addEventListener("click", ()=>{
+      checkAnswer(idx);
+    });
+    container.appendChild(btn);
+  });
+
+  // MathJax 렌더링
+  MathJax.typeset();
+
+  // 타이머
+  if(questionTimer) clearTimeout(questionTimer);
+  if(timeLimitPerQuestion !== Infinity){
+    // 에너지바 애니메이션 (단순 폭 감소)
+    let startTime = Date.now();
+    let countdown = setInterval(()=>{
+      let elapsed = Date.now() - startTime;
+      let ratio = 1 - elapsed/timeLimitPerQuestion;
+      if(ratio < 0) ratio = 0;
+      energyBarInner.style.width = (ratio*100)+"%";
+    }, 200);
+
+    questionTimer = setTimeout(()=>{
+      clearInterval(countdown);
+      // 시간 초과 => 기회 1 감소, 다음 문제
+      lives--;
+      document.getElementById("lives").textContent = lives;
+      showSolution(false, true); // 시간초과로 오답 처리(정답 표시)
+    }, timeLimitPerQuestion);
+  }
+}
+
+// --------------------------------------------------------------------------------
+// 정답 체크
+// --------------------------------------------------------------------------------
+function checkAnswer(chosenIndex){
+  const q = questions[currentQuestionIndex];
+  if(questionTimer) clearTimeout(questionTimer);
+
+  // 정답 여부
+  const isCorrect = (chosenIndex === q.correctIndex);
+
+  showSolution(isCorrect, false);
+}
+
+// --------------------------------------------------------------------------------
+// 정답/오답 처리 후 '다음 문제' 버튼 활성화
+// --------------------------------------------------------------------------------
+function showSolution(isCorrect, isTimeout){
+  const q = questions[currentQuestionIndex];
+  const container = document.querySelector(".question-container");
+  const buttons = container.querySelectorAll(".answer-button");
+  buttons.forEach((btn, idx)=>{
+    btn.disabled = true; // 선택 불가
+    // 정답 강조
+    let actualIndex = q.choices.indexOf(btn.innerHTML);
+    if(actualIndex === q.correctIndex){
+      btn.classList.add("correct");
+    }
+  });
+
+  let resultText = document.createElement("div");
+  if(isCorrect){
+    score += scorePerQuestion;
+    resultText.innerHTML = "<strong>정답입니다!</strong>";
+  } else if(isTimeout){
+    resultText.innerHTML = "<strong>시간 초과! 오답 처리됩니다.</strong><br/>"+q.solution;
+  } else {
+    // 오답
+    lives--;
+    document.getElementById("lives").textContent = lives;
+    resultText.innerHTML = "<strong>오답입니다.</strong><br/>"+q.solution;
+  }
+  container.appendChild(resultText);
+
+  // 점수 갱신
+  document.getElementById("score").textContent = score;
+
+  document.getElementById("nextButton").classList.remove("hidden");
+}
+
+// --------------------------------------------------------------------------------
+// 다음 문제 버튼
+// --------------------------------------------------------------------------------
+document.getElementById("nextButton").addEventListener("click", ()=>{
+  // 만약 한 바퀴 도는 중이라면 카운트 증가
+  if(questionsAnswered < questions.length){
+    questionsAnswered++;
+  }
+  // 라이프 체크
+  if(lives <= 0){
+    endGame();
+    return;
+  }
+  showQuestion();
+});
+
+// --------------------------------------------------------------------------------
+// 게임 종료
+// --------------------------------------------------------------------------------
+function endGame(){
+  // 타이머 정리
+  if(totalTimeTimer) clearInterval(totalTimeTimer);
+  if(questionTimer) clearTimeout(questionTimer);
+
+  document.getElementById("gameScreen").classList.add("hidden");
+  document.getElementById("endScreen").classList.remove("hidden");
+  document.getElementById("finalScore").textContent = score;
+}
+
+// --------------------------------------------------------------------------------
+// 점수전송 버튼
+// --------------------------------------------------------------------------------
+document.getElementById("sendScoreBtn").addEventListener("click", ()=>{
+  const playerName = document.getElementById("playerName").value.trim();
+  saveData("정적분의 활용(넓이)", playerName, score, totalElapsedTime);
+});
+</script>
+</body>
+</html>
